@@ -416,6 +416,7 @@ def add_rule_cmd(
 def export(
     file: Annotated[Path, typer.Argument(help="Target file to export context for.")],
     output: Annotated[Optional[Path], typer.Option("--output", "-o", help="Write JSON to file.")] = None,
+    json_flag: Annotated[bool, typer.Option("--json/--no-json", help="Output as JSON (default; accepted for scripting compatibility).")] = False,
 ) -> None:
     """Export resolved context as JSON (for tool integration)."""
     target = file.resolve()

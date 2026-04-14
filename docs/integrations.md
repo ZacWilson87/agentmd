@@ -369,9 +369,11 @@ data = json.load(sys.stdin)
 for skill in data.get('active_skills', []):
     body = f'# {skill[\"id\"]}\n\n{skill[\"description\"]}\n\nTrigger: {skill[\"trigger\"]}\n'
     fname = skill['id'] + '.md'
-    src = pathlib.Path(skill.get('path', ''))
-    if src.exists():
-        body += '\n' + src.read_text()
+    skill_path = skill.get('path')
+    if skill_path:
+        src = pathlib.Path(skill_path)
+        if src.exists():
+            body += '\n' + src.read_text()
     pathlib.Path('.windsurf/workflows/' + fname).write_text(body)
     print(fname)
 "

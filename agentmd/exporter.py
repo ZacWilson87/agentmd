@@ -12,7 +12,7 @@ def export_context(ctx: ResolvedContext) -> dict[str, Any]:
     """Serialise a ResolvedContext to a plain dict suitable for JSON export."""
     return {
         "agents_file": _export_agents(ctx.agents_file) if ctx.agents_file else None,
-        "active_skills": [_export_skill(s) for s in ctx.active_skills],
+        "active_skills": [_export_skill(s, ctx.skill_paths.get(s.id)) for s in ctx.active_skills],
         "active_rules": [_export_rule(r) for r in ctx.active_rules],
         "source_files": [str(p) for p in ctx.source_files],
         # Additive merges from all AGENTS.md files in scope
@@ -40,7 +40,7 @@ def _export_agents(a: Any) -> dict[str, Any]:
     }
 
 
-def _export_skill(s: Any) -> dict[str, Any]:
+def _export_skill(s: Any, path: Path | None = None) -> dict[str, Any]:
     return {
         "agentmd": s.agentmd,
         "type": s.type,
@@ -51,6 +51,7 @@ def _export_skill(s: Any) -> dict[str, Any]:
         "inputs": [i.model_dump() for i in s.inputs],
         "outputs": s.outputs,
         "tags": s.tags,
+        "path": str(path) if path else None,
     }
 
 
