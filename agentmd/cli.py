@@ -35,7 +35,7 @@ app.add_typer(trust_app, name="trust")
 console = Console()
 err_console = Console(stderr=True)
 
-_SEV_COLOR = {"error": "red", "warning": "yellow", "info": "blue"}
+_SEV_COLOR = {"critical": "bold red", "error": "red", "warning": "yellow", "info": "blue"}
 _TRUST_COLOR = {"trusted": "green", "changed": "red", "new": "yellow", "missing": "dim"}
 
 
@@ -581,6 +581,126 @@ def audit(
     else:
         err_console.print("\n[bold red]Audit failed.[/bold red]")
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# commit
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def commit(
+    root: Annotated[Path, typer.Argument(help="Repo root (default: CWD).")] = Path("."),
+    check_only: Annotated[bool, typer.Option("--check-only", help="Exit with error on violations; do not print scope suggestion.")] = False,
+    output_json: Annotated[bool, typer.Option("--json", help="Output full analysis as JSON.")] = False,
+) -> None:
+    """Guard staged files against rule violations and suggest a semantic commit scope.
+
+    Checks every staged file against its active agentmd rules (including
+    linter_command and linter_regex).  Critical-severity violations block the
+    commit (exit 1).  Non-critical violations are shown as warnings.
+
+    On a clean diff the command prints a suggested conventional-commit message
+    template using the resolved scope and inferred commit type.
+
+    Use as a pre-commit hook::
+
+      agentmd commit --check-only
+    """
+    from agentmd.committer import analyze_staged
+
+    repo_root = root.resolve()
+    analysis = analyze_staged(repo_root)
+
+    if output_json:
+        import dataclasses
+
+        def _serialise(obj: object) -> object:
+            if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+                return {k: _serialise(v) for k, v in dataclasses.asdict(obj).items()}
+            if isinstance(obj, Path):
+                return str(obj)
+            if isinstance(obj, list):
+                return [_serialise(i) for i in obj]
+            if isinstance(obj, dict):
+                return {str(k): _serialise(v) for k, v in obj.items()}
+            return obj
+
+        out = {
+            "staged_files": [str(f) for f in analysis.staged_files],
+            "violations": [_serialise(v) for v in analysis.violations],
+            "suggested_scope": analysis.suggested_scope,
+            "suggested_type": analysis.suggested_type,
+            "is_blocked": analysis.is_blocked,
+            "suggested_message": analysis.format_message(),
+        }
+        sys.stdout.write(json.dumps(out, indent=2) + "\n")
+        if analysis.is_blocked:
+            raise typer.Exit(1)
+        return
+
+    if not analysis.staged_files:
+        console.print("[dim]No staged files found. Run git add first.[/dim]")
+        return
+
+    # ---- Violation report ----
+    if analysis.violations:
+        table = Table(
+            title="Staged File Violations",
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("File")
+        table.add_column("Rule")
+        table.add_column("Sev")
+        table.add_column("Location")
+        table.add_column("Message")
+
+        for v in analysis.violations:
+            color = _SEV_COLOR.get(v.severity, "white")
+            loc = f":{v.line}" if v.line else ""
+            rel = _rel(v.file, repo_root)
+            table.add_row(
+                rel,
+                v.rule_id,
+                Text(v.severity, style=color),
+                f"{rel}{loc}",
+                v.message[:80],
+            )
+
+        console.print(table)
+
+        if analysis.critical_violations:
+            err_console.print(
+                f"\n[bold red]⛔  Commit blocked:[/bold red] "
+                f"{len(analysis.critical_violations)} critical violation(s). "
+                "Fix before committing."
+            )
+            raise typer.Exit(1)
+
+        # Non-critical: warn but allow
+        err_console.print(
+            f"\n[yellow]⚠  {len(analysis.error_violations)} error violation(s) found.[/yellow] "
+            "Commit is not blocked (no critical violations)."
+        )
+    else:
+        console.print("[green]✓ No rule violations in staged files.[/green]")
+
+    if check_only:
+        return
+
+    # ---- Scope suggestion ----
+    console.print()
+    _print_section("Suggested Commit")
+    console.print(f"  [bold]{analysis.format_message()}[/bold]")
+    if analysis.suggested_scope:
+        console.print(f"  [dim]Scope detected from: agentmd context[/dim]")
+    console.print(f"  [dim]Type inferred: {analysis.suggested_type}[/dim]")
+    console.print(
+        f"\n  Staged: {len(analysis.staged_files)} file(s) — "
+        + ", ".join(_rel(f, repo_root) for f in analysis.staged_files[:4])
+        + (" …" if len(analysis.staged_files) > 4 else "")
+    )
 
 
 # ---------------------------------------------------------------------------

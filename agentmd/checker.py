@@ -1,13 +1,28 @@
-"""Rule violation checker — AST-based and pattern-based analysis.
+"""Rule violation checker — AST-based, pattern-based, and linter-based analysis.
 
 check_file()   — check a single file, return violations with line numbers
 scan_repo()    — scan all matching files in a repo, return aggregated results
+
+Linter integration
+------------------
+Rules can optionally specify:
+
+  linter_command: "mypy {file} --no-error-summary"
+    Shell command executed per file.  ``{file}`` is substituted with the
+    absolute file path; if absent the path is appended as the final argument.
+    Exit code 0 → clean; non-zero → violations.  stdout lines become messages.
+
+  linter_regex: "TODO|FIXME"
+    Regex searched line-by-line.  Any match is a violation with the matched
+    line number reported.  Runs in addition to (or instead of) built-in checks.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+import shlex
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -208,10 +223,91 @@ _GENERIC_CHECKS: dict[str, Callable[[str], list[ViolationDetail]]] = {
 def _get_checker(
     rule_id: str, path: Path
 ) -> Callable[[str], list[ViolationDetail]] | None:
-    """Return the best available checker for rule_id on the given file."""
+    """Return the best available built-in checker for rule_id on the given file."""
     if path.suffix == ".py" and rule_id in _PYTHON_CHECKS:
         return _PYTHON_CHECKS[rule_id]
     return _GENERIC_CHECKS.get(rule_id)
+
+
+# ---------------------------------------------------------------------------
+# Linter-based checkers (driven by RULE.md linter_command / linter_regex)
+# ---------------------------------------------------------------------------
+
+# Regex for parsing linter output lines with embedded location info:
+# e.g.  "path/to/file.py:42: error: ..."  or  "file.py:42:5: ..."
+_LOCATION_RE = re.compile(r"^[^:]+:(\d+)(?::\d+)?:\s*(.*)")
+
+
+def _run_linter_command(rule: RuleFile, target: Path) -> list[ViolationDetail]:
+    """Execute rule.linter_command for the target file and collect violations.
+
+    Substitutes ``{file}`` in the command with the absolute file path; if
+    ``{file}`` is not present the path is appended as the last argument.
+
+    Returns an empty list on timeout, missing executable, or if the command
+    exits 0 (clean).  Non-zero exit code is treated as violations found.
+    """
+    if not rule.linter_command:
+        return []
+
+    cmd_str = rule.linter_command
+    file_str = str(target)
+
+    if "{file}" in cmd_str:
+        cmd_str = cmd_str.replace("{file}", file_str)
+    else:
+        cmd_str = cmd_str + " " + file_str
+
+    try:
+        proc = subprocess.run(
+            shlex.split(cmd_str),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+
+    if proc.returncode == 0:
+        return []
+
+    output = (proc.stdout + proc.stderr).strip()
+    if not output:
+        return [ViolationDetail(
+            message=f"linter exited {proc.returncode} (no output)",
+            line=None,
+        )]
+
+    results: list[ViolationDetail] = []
+    for raw_line in output.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        m = _LOCATION_RE.match(raw_line)
+        if m:
+            results.append(ViolationDetail(message=m.group(2).strip(), line=int(m.group(1))))
+        else:
+            results.append(ViolationDetail(message=raw_line, line=None))
+    return results
+
+
+def _run_linter_regex(rule: RuleFile, content: str) -> list[ViolationDetail]:
+    """Search file content with rule.linter_regex and return matched lines."""
+    if not rule.linter_regex:
+        return []
+    try:
+        pattern = re.compile(rule.linter_regex)
+    except re.error:
+        return []
+
+    results: list[ViolationDetail] = []
+    for i, line in enumerate(content.splitlines(), start=1):
+        if pattern.search(line):
+            results.append(ViolationDetail(
+                message=f"Pattern /{rule.linter_regex}/ matched: {line.strip()[:120]}",
+                line=i,
+            ))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +321,8 @@ def check_file(
     """Check target against its active rules.
 
     Returns dict of {rule_id: [ViolationDetail, ...]} for violated rules.
-    Rules without a known checker are silently skipped.
+    Rules without any checker (built-in, linter_command, or linter_regex)
+    are silently skipped.
     """
     if not target.is_file():
         return {}
@@ -237,10 +334,19 @@ def check_file(
 
     violations: dict[str, list[ViolationDetail]] = {}
     for rule in ctx.active_rules:
-        checker = _get_checker(rule.id, target)
-        if checker is None:
-            continue
-        found = checker(content)
+        found: list[ViolationDetail] = []
+
+        # 1. Built-in checker (AST or regex)
+        built_in = _get_checker(rule.id, target)
+        if built_in:
+            found.extend(built_in(content))
+
+        # 2. linter_regex (always runs when present, independent of built-in)
+        found.extend(_run_linter_regex(rule, content))
+
+        # 3. linter_command (always runs when present, independent of built-in)
+        found.extend(_run_linter_command(rule, target))
+
         if found:
             violations[rule.id] = found
     return violations
@@ -300,10 +406,15 @@ def scan_repo(root: Path) -> dict[Path, FileViolations]:
 
         fv = FileViolations(path=fpath)
         for rule in applicable:
-            checker = _get_checker(rule.id, fpath)
-            if checker is None:
-                continue
-            found = checker(content)
+            found: list[ViolationDetail] = []
+
+            built_in = _get_checker(rule.id, fpath)
+            if built_in:
+                found.extend(built_in(content))
+
+            found.extend(_run_linter_regex(rule, content))
+            found.extend(_run_linter_command(rule, fpath))
+
             if found:
                 fv.violations[rule.id] = found
 

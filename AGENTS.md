@@ -51,7 +51,8 @@ agent_instructions: |
                             with skill_paths, prompt_snippets, and warnings
   - agentmd/scaffolder.py — init + add commands (template rendering)
   - agentmd/exporter.py   — JSON serialisation for tool integration
-  - agentmd/checker.py    — pattern-based rule violation detection
+  - agentmd/checker.py    — pattern-based rule violation detection (built-in + linter_regex + linter_command)
+  - agentmd/committer.py  — commit gate: staged file analysis, scope/type inference, critical blocking
   - agentmd/mcp_server.py — JSON-RPC 2.0 MCP server (stdio transport)
   - agentmd/trust.py      — SHA-256 checksum trust store for SKILL.md files
   - agentmd/discovery.py  — context drift detection (project vs AGENTS.md)

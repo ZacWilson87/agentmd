@@ -144,7 +144,7 @@ class TestRuleFile:
                 "agentmd": "1.0",
                 "type": "rule",
                 "id": "my-rule",
-                "severity": "critical",
+                "severity": "blocker",
                 "description": "x",
             })
 

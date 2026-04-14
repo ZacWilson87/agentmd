@@ -399,8 +399,55 @@ supports global MCP config, not project-level):
 
 ## Pre-commit Hook
 
-Add a `agentmd validate` step to your pre-commit config to catch schema
-errors before they reach CI:
+### Commit gate (rule enforcement + semantic scope)
+
+`agentmd commit` checks every staged file against its active rules — including
+`linter_command` and `linter_regex` — and blocks the commit if any
+**critical**-severity violation is found.  It also suggests a conventional-commit
+message template based on the resolved agentmd context.
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: agentmd-commit-gate
+        name: agentmd commit gate
+        entry: agentmd commit --check-only
+        language: python
+        pass_filenames: false
+        always_run: true
+```
+
+Run interactively to see the scope suggestion:
+
+```bash
+git add src/db/schema.py
+agentmd commit
+# ✓ No rule violations in staged files.
+#
+# ── Suggested Commit ──────────────
+#   feat(db): <description>
+#   Scope detected from: agentmd context
+#   Type inferred: feat
+#   Staged: 1 file(s) — src/db/schema.py
+```
+
+When a critical rule is violated:
+
+```bash
+git add src/db/schema.py
+agentmd commit
+# ┌ Staged File Violations ──────────────────────────────────────────┐
+# │ File              Rule      Sev       Location   Message         │
+# │ src/db/schema.py  no-raw-sql CRITICAL :42  Raw SQL string found  │
+# └──────────────────────────────────────────────────────────────────┘
+# ⛔ Commit blocked: 1 critical violation(s). Fix before committing.
+```
+
+### Schema validation
+
+Add a `agentmd validate` step to catch schema errors before they reach CI:
 
 ```yaml
 # .pre-commit-config.yaml
@@ -413,6 +460,79 @@ repos:
         language: python
         pass_filenames: false
         always_run: true
+```
+
+---
+
+## Rule-to-Linter Mapping
+
+RULE.md files can optionally specify a `linter_command` and/or `linter_regex`
+to wire external tools directly into `agentmd check` and `agentmd commit`.
+
+### linter_command
+
+Any shell command. Use `{file}` to inject the target file path:
+
+```yaml
+---
+agentmd: "1.0"
+type: rule
+id: mypy-strict
+severity: critical
+description: "All Python files must pass mypy strict type checking"
+rationale: "Catches type errors before runtime"
+applies_to:
+  - "**/*.py"
+exceptions:
+  - "tests/**"
+linter_command: "mypy {file} --strict --no-error-summary"
+---
+```
+
+```yaml
+---
+agentmd: "1.0"
+type: rule
+id: no-secrets
+severity: critical
+description: "No secrets or credentials in source files"
+linter_command: "detect-secrets scan {file}"
+---
+```
+
+The command exits 0 for clean files and non-zero for violations.
+stdout/stderr lines become violation messages. Lines in `filename:N:` format
+have their line numbers extracted automatically.
+
+### linter_regex
+
+Regex searched line-by-line; any match is a violation:
+
+```yaml
+---
+agentmd: "1.0"
+type: rule
+id: no-hardcoded-urls
+severity: warning
+description: "No hardcoded production URLs in source code"
+linter_regex: "https://api\\.mycompany\\.com"
+applies_to:
+  - "**/*.py"
+  - "**/*.ts"
+exceptions:
+  - "docs/**"
+---
+```
+
+Both fields can coexist on a single rule — all results are merged.
+
+### severity: critical
+
+Critical rules block `agentmd commit` entirely. Use this for security,
+compliance, or data-integrity rules that must never be violated:
+
+```yaml
+severity: critical   # exits 1 in agentmd commit; also causes agentmd audit to fail
 ```
 
 ---

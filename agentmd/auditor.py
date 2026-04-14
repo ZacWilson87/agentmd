@@ -55,7 +55,7 @@ class AuditReport:
 
     @property
     def error_violations(self) -> int:
-        """Count rule violations that come from error-severity rules."""
+        """Count rule violations from *error*- or *critical*-severity rules."""
         from agentmd.models import RuleFile
 
         # Gather all rule severities
@@ -71,7 +71,7 @@ class AuditReport:
         count = 0
         for fv in self.violations.values():
             for rule_id in fv.violations:
-                if rule_severities.get(rule_id) == "error":
+                if rule_severities.get(rule_id) in ("error", "critical"):
                     count += len(fv.violations[rule_id])
         return count
 
