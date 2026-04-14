@@ -18,8 +18,21 @@ hook stdout.
    pip install agentmd
    ```
 
-2. Add agentmd to your Claude Code MCP configuration in
-   `.claude/settings.json`:
+2. Add agentmd to your MCP configuration. For Claude Code, add to
+   `.mcp.json` (project-scoped) or `~/.claude/settings.json` (user-scoped):
+   ```json
+   {
+     "mcpServers": {
+       "agentmd": {
+         "command": "agentmd",
+         "args": ["mcp", "--root", "/absolute/path/to/your/project"]
+       }
+     }
+   }
+   ```
+
+   For Windsurf, add to `~/.codeium/windsurf/mcp_config.json` (global only;
+   Windsurf does not support project-level MCP config):
    ```json
    {
      "mcpServers": {
@@ -69,51 +82,27 @@ one message per line. Errors and startup notices go to stderr.
 
 ## Claude Code
 
-Claude Code supports hooks that run shell commands in response to tool events.
-Use `agentmd export` in a `PreToolUse` hook to inject context before every
-file operation.
+### AGENTS.md vs CLAUDE.md
 
-### Setup
+Claude Code reads `CLAUDE.md` (not `AGENTS.md`) natively. To bridge this,
+add an import line to your project's `CLAUDE.md`:
 
-1. Install agentmd in your project:
-   ```bash
-   pip install agentmd
-   # or with uv:
-   uv add agentmd
-   ```
+```markdown
+@AGENTS.md
 
-2. Add a `AGENTS.md` at your project root:
-   ```bash
-   agentmd init
-   ```
+<!-- Claude-specific additions below -->
+```
 
-3. Configure a Claude Code hook in `.claude/settings.json`:
-   ```json
-   {
-     "hooks": {
-       "PreToolUse": [
-         {
-           "matcher": ".*",
-           "hooks": [
-             {
-               "type": "command",
-               "command": "agentmd export \"$CLAUDE_TOOL_INPUT_PATH\" 2>/dev/null || true"
-             }
-           ]
-         }
-       ]
-     }
-   }
-   ```
+The `@AGENTS.md` import pulls in the full content of `AGENTS.md` at session
+start. You can then add Claude-specific instructions beneath it.
 
-4. Claude Code will receive the resolved context JSON on stdout before
-   each tool use, giving it structured awareness of your project's skills,
-   rules, and conventions.
+The MCP server integration above is the recommended path — it gives the
+agent structured, queryable access to context rather than a flat text dump.
 
-### Advanced: File-specific context
+### Session start hook
 
-You can also query context in a session start hook to prime Claude's
-understanding of the whole project:
+To inject resolved context at the start of every Claude Code session,
+configure a `SessionStart` hook in `.claude/settings.json`:
 
 ```json
 {
@@ -123,7 +112,7 @@ understanding of the whole project:
         "hooks": [
           {
             "type": "command",
-            "command": "agentmd resolve . --json"
+            "command": "agentmd export . --json 2>/dev/null || true"
           }
         ]
       }
@@ -132,48 +121,134 @@ understanding of the whole project:
 }
 ```
 
+`SessionStart` hook stdout is injected directly into Claude's context window.
+The JSON output of `agentmd export` includes the resolved skills, rules,
+conventions, and `prompt_snippets` for the project root.
+
+> **Note**: `PreToolUse` hook stdout is **not** injected into Claude's
+> context — use `SessionStart` or `UserPromptSubmit` for context injection.
+> `PreToolUse` hooks communicate via exit codes and JSON responses on stdout
+> (used for blocking or modifying tool calls, not for adding context).
+
 ---
 
 ## Cursor
 
-Cursor reads `.cursorrules` for project-level instructions.
-Generate it from your agentmd context:
+### Native AGENTS.md
 
-```bash
-agentmd export src/main.py | python3 -c "
-import json, sys
-ctx = json.load(sys.stdin)
-rules = []
-if ctx['agents_file']:
-    a = ctx['agents_file']
-    rules.append(f'# {a[\"name\"]}')
-    rules.append('')
-    if a['agent_instructions']:
-        rules.append(a['agent_instructions'])
-    if a['conventions']:
-        rules.append('## Conventions')
-        for c in a['conventions']:
-            rules.append(f'- {c}')
-    if a['stack']:
-        rules.append(f'## Stack: {', '.join(a['stack'])}')
-for rule in ctx['active_rules']:
-    rules.append(f'## Rule [{rule['severity']}]: {rule['id']}')
-    rules.append(rule['description'])
-print('\n'.join(rules))
-" > .cursorrules
+Cursor reads `AGENTS.md` from the project root in Agent mode without any
+setup. This provides basic out-of-the-box compatibility, but note that
+subdirectory `AGENTS.md` files and background agents (GitHub, Slack, Linear
+integrations) may not load the file reliably. For structured, file-scoped
+rules, use the `.cursor/rules/` approach below.
+
+### .cursor/rules/ (recommended)
+
+`.cursorrules` is deprecated as of Cursor 0.45 and will eventually be
+removed. The current standard is `.cursor/rules/*.mdc` files with YAML
+frontmatter. Each file defines one rule with explicit scope and trigger
+behavior.
+
+**MDC file format:**
+
+```yaml
+---
+description: Short description shown in UI and used by the agent to decide relevance
+globs: src/**/*.ts, src/**/*.tsx
+alwaysApply: false
+---
+
+Rule body in Markdown...
 ```
 
-Add this to your `Makefile` or pre-commit hook to keep `.cursorrules`
+**Four rule types** (determined by frontmatter values):
+
+| Type | `alwaysApply` | `globs` | Trigger |
+|------|--------------|---------|---------|
+| Always | `true` | empty | Every chat session |
+| Auto Attached | `false` | set | When a matching file is in context |
+| Agent Requested | `false` | empty | AI reads `description` and decides |
+| Manual | `false` | empty + no description | Only when @-mentioned |
+
+**Generate `.cursor/rules/` from your agentmd context:**
+
+```bash
+agentmd export src/main.py | python3 scripts/generate-cursor-rules.py
+```
+
+`scripts/generate-cursor-rules.py`:
+
+```python
+import json, sys, pathlib, re
+
+data = json.load(sys.stdin)
+rules_dir = pathlib.Path(".cursor/rules")
+rules_dir.mkdir(parents=True, exist_ok=True)
+
+# Always-on project context rule
+if data.get("agents_file"):
+    a = data["agents_file"]
+    lines = [
+        "---",
+        "description: Project conventions and AI agent instructions",
+        "globs: ",
+        "alwaysApply: true",
+        "---",
+        "",
+    ]
+    if a.get("agent_instructions"):
+        lines.append(a["agent_instructions"].rstrip())
+        lines.append("")
+    if a.get("conventions"):
+        lines.append("## Conventions")
+        for c in a["conventions"]:
+            lines.append(f"- {c}")
+        lines.append("")
+    if a.get("stack"):
+        lines.append(f"## Stack\n{', '.join(a['stack'])}")
+    (rules_dir / "project-context.mdc").write_text("\n".join(lines))
+
+# Per-rule files (auto-attached by glob)
+for rule in data.get("active_rules", []):
+    globs = ", ".join(rule.get("applies_to", []))
+    lines = [
+        "---",
+        f"description: [{rule['severity'].upper()}] {rule['description']}",
+        f"globs: {globs}",
+        "alwaysApply: false",
+        "---",
+        "",
+        f"# {rule['id']}",
+        "",
+        rule.get("description", ""),
+    ]
+    if rule.get("rationale"):
+        lines.extend(["", f"**Rationale**: {rule['rationale']}"])
+    fname = re.sub(r"[^a-z0-9-]", "-", rule["id"].lower()) + ".mdc"
+    (rules_dir / fname).write_text("\n".join(lines))
+
+count = len(data.get("active_rules", [])) + (1 if data.get("agents_file") else 0)
+print(f"Generated {count} rule file(s) in .cursor/rules/")
+```
+
+Add this to your `Makefile` or pre-commit hook to keep `.cursor/rules/`
 in sync with your agentmd files.
 
 ---
 
 ## GitHub Copilot
 
-Copilot uses `.github/copilot-instructions.md` for repository-level
-instructions.
+### Copilot CLI (native AGENTS.md)
 
-Generate it from your agentmd context:
+The `gh copilot` CLI natively reads `AGENTS.md` from the repository root,
+the current working directory, and any directories listed in the
+`COPILOT_CUSTOM_INSTRUCTIONS_DIRS` environment variable (comma-separated).
+No additional setup is needed — agentmd's format is directly compatible.
+
+### Copilot Chat (VS Code / Visual Studio / GitHub.com)
+
+Copilot Chat reads `.github/copilot-instructions.md` for repository-level
+instructions. Generate it from your agentmd context:
 
 ```bash
 mkdir -p .github
@@ -183,6 +258,140 @@ agentmd export . --json | python3 scripts/generate-copilot-instructions.py \
 
 Where `scripts/generate-copilot-instructions.py` reads the JSON from stdin
 and produces a Markdown document with the project's conventions and rules.
+
+> **Code review limit**: Copilot's code review feature reads only the first
+> **4,000 characters** of any instruction file; content beyond that is
+> silently ignored. Keep the file concise or split instructions across
+> path-scoped files (see below).
+
+### Path-scoped instructions (cloud agent + code review)
+
+For file-scoped rules analogous to agentmd's `RULE.md` `applies_to` field,
+use `.github/instructions/*.instructions.md` files with an `applyTo`
+frontmatter key (glob syntax). These are read by the Copilot cloud agent
+and Copilot code review on GitHub.com:
+
+```markdown
+---
+applyTo: "app/models/**/*.rb"
+---
+
+Use Rails conventions for all ActiveRecord models. Never bypass validations.
+```
+
+Generate one file per active agentmd rule:
+
+```bash
+mkdir -p .github/instructions
+agentmd export . --json | python3 -c "
+import json, sys, pathlib, re
+data = json.load(sys.stdin)
+for rule in data.get('active_rules', []):
+    globs = ', '.join(rule.get('applies_to', ['**/*']))
+    body = [
+        '---',
+        f'applyTo: \"{globs}\"',
+        '---',
+        '',
+        f'## {rule[\"id\"]} [{rule[\"severity\"].upper()}]',
+        '',
+        rule.get('description', ''),
+    ]
+    if rule.get('rationale'):
+        body.extend(['', f'**Rationale**: {rule[\"rationale\"]}'])
+    fname = re.sub(r'[^a-z0-9-]', '-', rule['id'].lower()) + '.instructions.md'
+    pathlib.Path('.github/instructions/' + fname).write_text('\n'.join(body))
+    print(fname)
+"
+```
+
+---
+
+## Windsurf
+
+### Native AGENTS.md
+
+Windsurf natively reads `AGENTS.md` as part of its Rules engine:
+
+- **Root-level `AGENTS.md`**: treated as `always_on` — included in every
+  Cascade prompt with no frontmatter needed.
+- **Subdirectory `AGENTS.md`**: auto-scoped as a glob rule for
+  `<directory>/**` — applied only when Cascade reads or edits files in
+  that directory.
+
+This makes agentmd's file-scoped context model a direct fit for Windsurf.
+
+### .windsurf/rules/ (modern rules)
+
+Windsurf's `.windsurf/rules/*.md` files use YAML frontmatter with a
+`trigger` field that maps naturally to agentmd rule scope:
+
+```yaml
+---
+trigger: always_on
+description: "Core coding standards"
+---
+
+Rule body in Markdown...
+```
+
+```yaml
+---
+trigger: glob
+globs: "**/*.test.ts"
+description: "Testing conventions"
+---
+```
+
+| `trigger` value | Behaviour |
+|-----------------|-----------|
+| `always_on` | Included in every Cascade prompt |
+| `glob` | Applied when matched files are in context |
+| `model_decision` | Cascade decides contextually whether to apply |
+| `manual` | Only applied when explicitly invoked via `/rule-name` |
+
+Individual rule files are capped at **12,000 characters**.
+
+The legacy `.windsurfrules` file (single flat file at project root) is
+still supported for backward compatibility.
+
+### .windsurf/workflows/ (skills analog)
+
+`.windsurf/workflows/*.md` files are step-by-step procedure files invocable
+via `/workflow-name` slash commands in Cascade — directly analogous to
+agentmd's `SKILL.md` files. Generate them from your agentmd skills:
+
+```bash
+mkdir -p .windsurf/workflows
+agentmd export . --json | python3 -c "
+import json, sys, pathlib
+data = json.load(sys.stdin)
+for skill in data.get('active_skills', []):
+    body = f'# {skill[\"id\"]}\n\n{skill[\"description\"]}\n\nTrigger: {skill[\"trigger\"]}\n'
+    fname = skill['id'] + '.md'
+    src = pathlib.Path(skill.get('path', ''))
+    if src.exists():
+        body += '\n' + src.read_text()
+    pathlib.Path('.windsurf/workflows/' + fname).write_text(body)
+    print(fname)
+"
+```
+
+### MCP server
+
+Add agentmd to `~/.codeium/windsurf/mcp_config.json` (Windsurf only
+supports global MCP config, not project-level):
+
+```json
+{
+  "mcpServers": {
+    "agentmd": {
+      "command": "agentmd",
+      "args": ["mcp", "--root", "/absolute/path/to/your/project"]
+    }
+  }
+}
+```
 
 ---
 
