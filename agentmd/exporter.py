@@ -18,6 +18,11 @@ def export_context(ctx: ResolvedContext) -> dict[str, Any]:
         # Additive merges from all AGENTS.md files in scope
         "merged_stack": ctx.merged_stack,
         "merged_conventions": ctx.merged_conventions,
+        # Concise per-skill instructions for direct agent consumption.
+        # Each entry is a self-contained prompt snippet an agent can act on.
+        "prompt_snippets": ctx.prompt_snippets,
+        # Non-fatal warnings from resolution (skipped broken files, duplicate refs).
+        "warnings": ctx.warnings,
     }
 
 
