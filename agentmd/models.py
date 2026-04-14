@@ -76,7 +76,7 @@ class RuleFile(BaseModel):
     agentmd: str = Field(..., description="Spec version — must be '1.0'.")
     type: Literal["rule"]
     id: str = Field(..., description="Kebab-case unique identifier.")
-    severity: Literal["error", "warning", "info"]
+    severity: Literal["critical", "error", "warning", "info"]
     description: str
     rationale: str = ""
     applies_to: list[str] = ["**/*"]
@@ -84,6 +84,11 @@ class RuleFile(BaseModel):
     # Security/compliance rules can be marked immutable so no closer-scope rule
     # with the same ID can displace them.
     immutable: bool = False
+    # Optional linter integration: executed by `agentmd check` and `agentmd commit`.
+    # Use {file} in the command to substitute the target file path.
+    linter_command: str | None = None
+    # Optional regex pattern: any match in the file content is a violation.
+    linter_regex: str | None = None
 
     @field_validator("agentmd")
     @classmethod

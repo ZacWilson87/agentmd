@@ -2,12 +2,15 @@
 agentmd: "1.0"
 type: rule
 id: {{ id }}
-severity: warning
+severity: warning        # critical | error | warning | info
 description: "{{ description }}"
 rationale: "Add rationale here explaining why this rule exists."
 applies_to:
   - "**/*"
 exceptions: []
+# Optional: linter integration — executed by `agentmd check` and `agentmd commit`
+# linter_command: "mypy {file} --no-error-summary"   # {file} is substituted with the target path
+# linter_regex: "TODO|FIXME"                          # any match per line is a violation
 ---
 
 ## Rule

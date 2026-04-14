@@ -158,7 +158,7 @@ Convention: place in a `rules/` subdirectory.
 agentmd: "1.0"
 type: rule
 id: no-raw-sql
-severity: error           # error | warning | info
+severity: error           # critical | error | warning | info
 description: "All database queries must use the ORM layer"
 rationale: "Prevents injection vulnerabilities and keeps query logic testable"
 applies_to:
@@ -166,6 +166,9 @@ applies_to:
 exceptions:
   - "migrations/**"
   - "scripts/seed_*.py"
+# Optional linter integration
+linter_command: "sqlfluff lint --dialect ansi {file}"
+linter_regex: "execute\\s*\\(\\s*[\"']"
 ---
 
 ## Rule
@@ -180,17 +183,33 @@ Never write raw SQL strings...
 | `agentmd` | `"1.0"` | yes | — |
 | `type` | `"rule"` | yes | — |
 | `id` | kebab-case string | yes | — |
-| `severity` | `"error" \| "warning" \| "info"` | yes | — |
+| `severity` | `"critical" \| "error" \| "warning" \| "info"` | yes | — |
 | `description` | string | yes | — |
 | `rationale` | string | no | `""` |
 | `applies_to` | list[glob] | no | `["**/*"]` |
 | `exceptions` | list[glob] | no | `[]` |
 | `immutable` | boolean | no | `false` |
+| `linter_command` | string | no | `null` |
+| `linter_regex` | string | no | `null` |
 
 **`immutable`**: When `true`, this rule cannot be displaced by a closer-scope
 rule with the same `id`. Useful for security or compliance rules that must
 apply project-wide regardless of subdirectory overrides. Immutable rules
 take priority over non-immutable rules of the same `id` at any scope depth.
+
+**`severity: critical`**: The highest severity level. Critical violations
+are treated as hard blockers by `agentmd commit` — the commit is refused
+until they are resolved. They also cause `agentmd audit` to fail.
+
+**`linter_command`**: Optional shell command executed per-file during
+`agentmd check` and `agentmd commit`. Use `{file}` as a placeholder for
+the target file path (e.g. `"mypy {file} --no-error-summary"`). If `{file}`
+is absent the path is appended as the last argument. Exit code 0 means clean;
+non-zero means violations. stdout/stderr lines become violation messages.
+
+**`linter_regex`**: Optional regex pattern searched line-by-line in the file
+content. Any matching line is reported as a violation with its line number.
+Runs in addition to any built-in checker for the same rule ID.
 
 ---
 
@@ -321,7 +340,70 @@ This format is designed for consumption by:
 
 ---
 
-## 6. Versioning
+## 6. Commit Gate
+
+`agentmd commit` is the bridge between the Resolver and a VCS commit workflow.
+It enforces rules against staged changes before a commit is created.
+
+### Algorithm
+
+```
+commit_gate(root) → CommitAnalysis
+
+1. staged = git diff --cached --name-only (added/modified files only)
+2. For each file in staged:
+   a. ctx = resolve(file)
+   b. violations = check_file(file, ctx)
+      — runs built-in checker (if any) + linter_regex + linter_command
+3. Classify violations by severity
+4. If any critical violations: exit 1 (blocked)
+5. Infer suggested_scope from ctx skill tags / AGENTS.md scope / directory
+6. Infer suggested_type from file patterns (feat | fix | docs | test | chore)
+7. Return CommitAnalysis { staged_files, violations, suggested_scope, suggested_type }
+```
+
+### Scope inference
+
+The suggested commit scope is derived in priority order:
+
+1. **Skill tags** — the most-frequent tag across all resolved skills for
+   staged files (e.g. tag `"db"` → scope `db`).
+2. **Package/module AGENTS.md** — when staged files resolve to a package-scope
+   `AGENTS.md`, the directory name is used as scope.
+3. **Common subdirectory** — the top-level subdirectory shared by all staged
+   files.
+4. **None** — if staged files span unrelated areas, no scope is suggested.
+
+### Type inference
+
+| Commit type | Condition |
+|-------------|-----------|
+| `docs` | All staged files are `.md` or inside `docs/` |
+| `test` | All staged files are inside `tests/` or match `test_*` / `*.test.*` |
+| `chore` | All staged files are config/meta files (pyproject.toml, .gitignore…) |
+| `fix` | All staged files are modifications of existing files (no new files) |
+| `feat` | Default |
+
+### Pre-commit hook usage
+
+Wire `agentmd commit --check-only` into git hooks or pre-commit:
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: agentmd-commit-gate
+        name: agentmd commit gate
+        entry: agentmd commit --check-only
+        language: python
+        pass_filenames: false
+        always_run: true
+```
+
+---
+
+## 7. Versioning
 
 The spec version is indicated by the `agentmd` field in every file.
 Current version: `"1.0"`.
