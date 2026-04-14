@@ -1,0 +1,31 @@
+---
+agentmd: "1.0"
+type: agents
+scope: project
+name: "{{ name }}"
+stack:
+  - python
+conventions:
+  - "Follow PEP 8 for Python code style"
+  - "Write docstrings for all public functions and classes"
+skills: []
+rules: []
+agent_instructions: |
+  You are operating in the {{ name }} project.
+  Review relevant SKILL.md files before implementing features.
+  Respect all active RULE.md constraints.
+---
+
+# {{ name }}
+
+Describe your project here. This narrative section is for humans — explain
+the architecture, key decisions, and anything an AI agent should understand
+about the codebase before operating in it.
+
+## Architecture
+
+...
+
+## Key Decisions
+
+...

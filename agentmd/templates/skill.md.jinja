@@ -1,0 +1,25 @@
+---
+agentmd: "1.0"
+type: skill
+id: {{ id }}
+version: "1.0"
+description: "{{ description }}"
+trigger: "when asked to {{ id | replace('-', ' ') }}"
+inputs:
+  - name: target
+    type: string
+    required: true
+    description: "The target to operate on"
+outputs: []
+tags: []
+---
+
+## Steps
+
+1. ...
+2. ...
+3. ...
+
+## Notes
+
+Add any notes, caveats, or examples here.
