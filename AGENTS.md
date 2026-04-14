@@ -44,13 +44,19 @@ agent_instructions: |
   - Check if any RULE.md in rules/ constrains the change
 
   File layout:
-  - agentmd/cli.py       — typer app, all commands
-  - agentmd/models.py    — pydantic models (AgentsFile, SkillFile, RuleFile)
-  - agentmd/parser.py    — YAML frontmatter extraction + file parsing
-  - agentmd/resolver.py  — scope resolution algorithm
+  - agentmd/cli.py        — typer app, all commands
+  - agentmd/models.py     — pydantic models (AgentsFile, SkillFile, RuleFile)
+  - agentmd/parser.py     — YAML frontmatter extraction + file parsing
+  - agentmd/resolver.py   — scope resolution algorithm; produces ResolvedContext
+                            with skill_paths, prompt_snippets, and warnings
   - agentmd/scaffolder.py — init + add commands (template rendering)
-  - agentmd/exporter.py  — JSON serialisation for tool integration
-  - agentmd/checker.py   — pattern-based rule violation detection
+  - agentmd/exporter.py   — JSON serialisation for tool integration
+  - agentmd/checker.py    — pattern-based rule violation detection
+  - agentmd/mcp_server.py — JSON-RPC 2.0 MCP server (stdio transport)
+  - agentmd/trust.py      — SHA-256 checksum trust store for SKILL.md files
+  - agentmd/discovery.py  — context drift detection (project vs AGENTS.md)
+  - agentmd/auditor.py    — full audit: validate + check + drift + trust
+  - agentmd/utils.py      — glob path-matching helpers
 ---
 
 # agentmd

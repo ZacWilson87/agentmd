@@ -185,6 +185,12 @@ Never write raw SQL strings...
 | `rationale` | string | no | `""` |
 | `applies_to` | list[glob] | no | `["**/*"]` |
 | `exceptions` | list[glob] | no | `[]` |
+| `immutable` | boolean | no | `false` |
+
+**`immutable`**: When `true`, this rule cannot be displaced by a closer-scope
+rule with the same `id`. Useful for security or compliance rules that must
+apply project-wide regardless of subdirectory overrides. Immutable rules
+take priority over non-immutable rules of the same `id` at any scope depth.
 
 ---
 
@@ -223,21 +229,40 @@ LOOP:
 4. Filter active_rules: keep only those matching applies_to against target
    (after excluding exceptions)
 
-5. Return ResolvedContext{agents_file, active_skills, active_rules, source_files}
+5. Generate prompt_snippets: one instruction per active_skill in the format:
+   "You have access to the [id] procedure. To use it, follow the steps in
+   [path]. Trigger: [trigger]."
+
+6. Return ResolvedContext{
+     agents_file, active_skills, active_rules,
+     source_files, merged_stack, merged_conventions,
+     skill_paths, prompt_snippets, warnings
+   }
 ```
 
 ### Key behaviours
 
 - **Closest wins for AGENTS.md**: Only the first AGENTS.md found (deepest
   in the tree relative to the target) is used. Parent AGENTS.md files are
-  ignored once one is found.
+  ignored once one is found. Stack and conventions, however, accumulate
+  additively from all AGENTS.md files encountered (useful for monorepos).
 - **Skills and rules accumulate**: All `*.skill.md` and `*.rule.md` files
   in `skills/` and `rules/` directories along the entire walk path are
   collected. Closest-scope definitions win on ID collision.
+- **Immutable rule priority**: A rule marked `immutable: true` takes
+  precedence over any non-immutable rule with the same `id`, regardless
+  of scope depth.
 - **Rule filtering**: Rules are filtered against the target file path using
   the `applies_to` glob patterns minus `exceptions`.
 - **Conservative parsing**: Files that fail validation are silently skipped
   during resolution (they are reported as errors by `agentmd validate`).
+  Skipped files are recorded in `warnings` on the `ResolvedContext`.
+- **Duplicate skill reference guard**: If the same skill file path appears
+  more than once in an AGENTS.md `skills` list, the duplicate is skipped and
+  a warning is added to `ResolvedContext.warnings`. Resolution never fails
+  due to duplicate references.
+- **Prompt snippets**: After collecting all active skills, the resolver
+  generates one prompt snippet per skill for direct agent consumption.
 
 ---
 
@@ -260,18 +285,35 @@ Rules for valid frontmatter:
 
 ## 5. Export Format
 
-`agentmd export <file>` produces a JSON object:
+`agentmd export <file>` (and the MCP `agentmd_resolve` tool) produce a JSON
+object:
 
 ```json
 {
   "agents_file": { ... } | null,
   "active_skills": [ { ... } ],
   "active_rules": [ { ... } ],
-  "source_files": [ "..." ]
+  "source_files": [ "..." ],
+  "merged_stack": [ "..." ],
+  "merged_conventions": [ "..." ],
+  "prompt_snippets": [ "..." ],
+  "warnings": [ "..." ]
 }
 ```
 
+| Field | Description |
+|---|---|
+| `agents_file` | The nearest AGENTS.md model, or `null` if none found |
+| `active_skills` | All `SkillFile` records in scope (closest-scope first) |
+| `active_rules` | All `RuleFile` records that apply to the target file |
+| `source_files` | Ordered list of every agentmd file loaded during resolution |
+| `merged_stack` | Stack labels from all AGENTS.md files on the path (additive) |
+| `merged_conventions` | Conventions from all AGENTS.md files (additive) |
+| `prompt_snippets` | One ready-to-use agent instruction per active skill |
+| `warnings` | Non-fatal issues collected during resolution (empty on clean repos) |
+
 This format is designed for consumption by:
+- The agentmd MCP server (`agentmd mcp`) — exposes all fields as tool output
 - Claude Code hooks (`PreToolUse`, `PostToolUse`)
 - Cursor `.cursorrules` generation scripts
 - CI rule-checking pipelines

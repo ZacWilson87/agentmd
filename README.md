@@ -169,24 +169,34 @@ This means a monorepo can have:
 
 ```
 agentmd init [PATH]             Bootstrap AGENTS.md, /skills, /rules
-agentmd validate [PATH]         Validate all agentmd files
-agentmd resolve <FILE>          Show resolved context for a file
+agentmd validate [PATH]         Validate all agentmd files (--drift, --trust)
+agentmd resolve <FILE>          Show resolved context + prompt snippets (--json)
 agentmd list skills [PATH]      List all skills (table)
 agentmd list rules [PATH]       List all rules (table)
 agentmd add skill <ID> [PATH]   Scaffold a new SKILL.md
 agentmd add rule <ID> [PATH]    Scaffold a new RULE.md
 agentmd export <FILE>           Export resolved context as JSON
 agentmd check <FILE>            Check rule violations for a file
+agentmd audit [PATH]            Full audit: validate + check + drift + trust
+agentmd mcp [--root PATH]       Start the MCP server (JSON-RPC over stdio)
+agentmd trust add <FILE>        Mark a SKILL.md as trusted
+agentmd trust remove <FILE>     Remove a SKILL.md from the trust store
+agentmd trust status [PATH]     Show trust status for all SKILL.md files
 ```
 
 ---
 
 ## Tool Integration
 
-agentmd's JSON export format is designed for tool integration:
+**MCP Server** — the recommended integration for Claude Code and any
+MCP-compatible agent. Run `agentmd mcp` and add it to your
+`.claude/settings.json` `mcpServers` block. The agent can then call
+`agentmd_resolve`, `agentmd_list_skills`, `agentmd_check`, and
+`agentmd_audit` directly, and receives `prompt_snippets` automatically on
+every resolve call. See [docs/integrations.md](docs/integrations.md).
 
-**Claude Code** — use `agentmd export` in a `PreToolUse` hook to inject
-structured context before each operation. See [docs/integrations.md](docs/integrations.md).
+**Claude Code hooks** — use `agentmd export` in a `PreToolUse` hook to
+inject structured context before each operation.
 
 **Cursor** — generate `.cursorrules` from `agentmd export` output.
 
