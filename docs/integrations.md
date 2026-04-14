@@ -4,6 +4,69 @@ How to wire agentmd into your AI coding tools.
 
 ---
 
+## MCP Server (recommended)
+
+agentmd ships a built-in MCP server that exposes all resolution, checking,
+and audit functionality as MCP tools over JSON-RPC 2.0 on stdio. This is
+the preferred integration: the agent calls tools directly instead of parsing
+hook stdout.
+
+### Setup
+
+1. Install agentmd:
+   ```bash
+   pip install agentmd
+   ```
+
+2. Add agentmd to your Claude Code MCP configuration in
+   `.claude/settings.json`:
+   ```json
+   {
+     "mcpServers": {
+       "agentmd": {
+         "command": "agentmd",
+         "args": ["mcp", "--root", "/absolute/path/to/your/project"]
+       }
+     }
+   }
+   ```
+
+3. The agent now has access to these tools:
+
+   | Tool | Description |
+   |------|-------------|
+   | `agentmd_resolve` | Resolve context (AGENTS.md, skills, rules, **prompt snippets**) for a file |
+   | `agentmd_list_skills` | List all SKILL.md files under the repo root |
+   | `agentmd_list_rules` | List all RULE.md files under the repo root |
+   | `agentmd_validate` | Validate all agentmd files — returns pass/fail per file |
+   | `agentmd_check` | Check a file for rule violations with line numbers |
+   | `agentmd_audit` | Full audit: validate + check + drift + trust |
+
+### Prompt Snippets
+
+Every `agentmd_resolve` call returns a `prompt_snippets` array — one entry
+per active skill — in this format:
+
+```
+You have access to the [scaffold-endpoint] procedure. To use it, follow the
+steps in [/repo/skills/scaffold-endpoint.skill.md]. Trigger: when asked to
+scaffold a new API endpoint
+```
+
+The agent can read these directly from the tool result and act on them
+without any manual copy-pasting.
+
+### Manual server start
+
+```bash
+agentmd mcp --root /path/to/project
+```
+
+The server reads JSON-RPC messages from stdin and writes responses to stdout,
+one message per line. Errors and startup notices go to stderr.
+
+---
+
 ## Claude Code
 
 Claude Code supports hooks that run shell commands in response to tool events.
@@ -167,7 +230,8 @@ jobs:
 
 ## Export Format Reference
 
-The JSON output of `agentmd export <file>` has this shape:
+The JSON output of `agentmd export <file>` (and the MCP `agentmd_resolve`
+tool) has this shape:
 
 ```json
 {
@@ -189,10 +253,10 @@ The JSON output of `agentmd export <file>` has this shape:
       "id": "scaffold-endpoint",
       "version": "1.0",
       "description": "...",
-      "trigger": "...",
-      "inputs": [...],
-      "outputs": [...],
-      "tags": [...]
+      "trigger": "when asked to scaffold a new API endpoint",
+      "inputs": [],
+      "outputs": [],
+      "tags": []
     }
   ],
   "active_rules": [
@@ -204,12 +268,28 @@ The JSON output of `agentmd export <file>` has this shape:
       "description": "...",
       "rationale": "...",
       "applies_to": ["**/*.py"],
-      "exceptions": ["migrations/**"]
+      "exceptions": ["migrations/**"],
+      "immutable": false
     }
   ],
   "source_files": [
     "/path/to/AGENTS.md",
     "/path/to/skills/scaffold-endpoint.skill.md"
-  ]
+  ],
+  "merged_stack": ["python", "fastapi"],
+  "merged_conventions": ["Use snake_case"],
+  "prompt_snippets": [
+    "You have access to the [scaffold-endpoint] procedure. To use it, follow the steps in [/path/to/skills/scaffold-endpoint.skill.md]. Trigger: when asked to scaffold a new API endpoint"
+  ],
+  "warnings": []
 }
 ```
+
+### Field notes
+
+| Field | Description |
+|---|---|
+| `merged_stack` | Stack labels accumulated from all AGENTS.md files on the walk path (closest first). Useful in monorepos with multiple AGENTS.md files. |
+| `merged_conventions` | Conventions accumulated from all AGENTS.md files on the walk path. |
+| `prompt_snippets` | One ready-to-use instruction per active skill. Inject directly into the agent prompt or read via MCP. |
+| `warnings` | Non-fatal issues from resolution (skipped broken files, duplicate skill references). Empty on a clean repo. |
