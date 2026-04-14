@@ -274,6 +274,23 @@ def _print_resolved_context(ctx: ResolvedContext, target: Path) -> None:
     else:
         console.print("\n[dim]No active rules for this file.[/dim]")
 
+    if ctx.prompt_snippets:
+        from rich.markup import escape
+
+        console.print(f"\n[bold]Prompt Snippets[/bold] ({len(ctx.prompt_snippets)})")
+        console.print(
+            "  [dim]Paste these into your agent prompt or use via MCP (agentmd mcp).[/dim]"
+        )
+        for snippet in ctx.prompt_snippets:
+            console.print(f"\n  [green]•[/green] {escape(snippet)}")
+    else:
+        console.print("\n[dim]No prompt snippets (no active skills in scope).[/dim]")
+
+    if ctx.warnings:
+        console.print(f"\n[bold yellow]Warnings[/bold yellow] ({len(ctx.warnings)})")
+        for w in ctx.warnings:
+            console.print(f"  [yellow]⚠[/yellow]  {w}")
+
     console.print(f"\n[dim]Source files: {len(ctx.source_files)}[/dim]")
     for sf in ctx.source_files:
         console.print(f"  [dim]{sf}[/dim]")

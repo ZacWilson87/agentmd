@@ -212,3 +212,158 @@ skills:
         # Should not raise, just silently skip
         ctx = resolve(target)
         assert ctx.active_skills == []
+
+
+class TestPromptSnippets:
+    """Tests for the prompt_snippets feature."""
+
+    def test_skill_generates_snippet(self, tmp_path):
+        _write(tmp_path / "AGENTS.md", AGENTS_CONTENT)
+        _write(tmp_path / "skills" / "scaffold-component.skill.md", SKILL_CONTENT)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        ctx = resolve(target)
+        assert len(ctx.prompt_snippets) == 1
+        snippet = ctx.prompt_snippets[0]
+        assert "[scaffold-component]" in snippet
+        assert "when asked to scaffold" in snippet  # trigger value
+        assert "Trigger:" in snippet
+
+    def test_snippet_includes_file_path(self, tmp_path):
+        _write(tmp_path / "AGENTS.md", AGENTS_CONTENT)
+        skill_path = tmp_path / "skills" / "scaffold-component.skill.md"
+        _write(skill_path, SKILL_CONTENT)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        ctx = resolve(target)
+        assert str(skill_path) in ctx.prompt_snippets[0]
+
+    def test_multiple_skills_multiple_snippets(self, tmp_path):
+        _write(tmp_path / "AGENTS.md", AGENTS_CONTENT)
+        _write(tmp_path / "skills" / "scaffold-component.skill.md", SKILL_CONTENT)
+        extra_skill = """\
+---
+agentmd: "1.0"
+type: skill
+id: write-test
+version: "1.0"
+description: "Write a test"
+trigger: "write a test for"
+---
+"""
+        _write(tmp_path / "skills" / "write-test.skill.md", extra_skill)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        ctx = resolve(target)
+        assert len(ctx.prompt_snippets) == 2
+        ids_in_snippets = {s.id for s in ctx.active_skills}
+        assert "scaffold-component" in ids_in_snippets
+        assert "write-test" in ids_in_snippets
+
+    def test_no_skills_no_snippets(self, tmp_path):
+        _write(tmp_path / "AGENTS.md", AGENTS_CONTENT)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        ctx = resolve(target)
+        assert ctx.prompt_snippets == []
+
+    def test_skill_paths_populated(self, tmp_path):
+        _write(tmp_path / "AGENTS.md", AGENTS_CONTENT)
+        skill_path = tmp_path / "skills" / "scaffold-component.skill.md"
+        _write(skill_path, SKILL_CONTENT)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        ctx = resolve(target)
+        assert "scaffold-component" in ctx.skill_paths
+        assert ctx.skill_paths["scaffold-component"] == skill_path
+
+
+class TestCircularDependencyGuard:
+    """Tests for duplicate/circular skill reference detection."""
+
+    def test_duplicate_skill_path_in_agents_md_emits_warning(self, tmp_path):
+        skill_path = tmp_path / "skills" / "scaffold-component.skill.md"
+        _write(skill_path, SKILL_CONTENT)
+        # Reference the same path twice in the skills list
+        agents = """\
+---
+agentmd: "1.0"
+type: agents
+name: "My Project"
+skills:
+  - skills/scaffold-component.skill.md
+  - skills/scaffold-component.skill.md
+---
+"""
+        _write(tmp_path / "AGENTS.md", agents)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        ctx = resolve(target)
+        # Skill should be loaded exactly once
+        skill_ids = [s.id for s in ctx.active_skills]
+        assert skill_ids.count("scaffold-component") == 1
+        # Warning should be recorded
+        assert any("Duplicate skill reference" in w for w in ctx.warnings)
+
+    def test_duplicate_skill_path_not_fatal(self, tmp_path):
+        skill_path = tmp_path / "skills" / "scaffold-component.skill.md"
+        _write(skill_path, SKILL_CONTENT)
+        agents = """\
+---
+agentmd: "1.0"
+type: agents
+name: "My Project"
+skills:
+  - skills/scaffold-component.skill.md
+  - skills/scaffold-component.skill.md
+---
+"""
+        _write(tmp_path / "AGENTS.md", agents)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        # Must not raise
+        ctx = resolve(target)
+        assert ctx.agents_file is not None
+
+
+class TestWarnings:
+    """Tests for non-fatal warnings collected during resolution."""
+
+    def test_broken_agents_md_emits_warning(self, tmp_path):
+        # Write an AGENTS.md with broken YAML
+        broken = "---\nnot: valid: yaml: [unclosed\n---\n"
+        _write(tmp_path / "AGENTS.md", broken)
+        target = tmp_path / "main.py"
+        target.touch()
+        ctx = resolve(target)
+        # Should not raise; broken file produces a warning
+        assert any("AGENTS.md" in w or "unreadable" in w for w in ctx.warnings)
+
+    def test_no_warnings_on_clean_repo(self, tmp_path):
+        _write(tmp_path / "AGENTS.md", AGENTS_CONTENT)
+        _write(tmp_path / "skills" / "scaffold-component.skill.md", SKILL_CONTENT)
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        ctx = resolve(target)
+        assert ctx.warnings == []
+
+    def test_broken_rule_md_emits_no_warning_but_is_skipped(self, tmp_path):
+        """Broken rule files in rules/ dir are silently skipped (not warned).
+
+        The conservative policy: resolution skips broken files; validate reports them.
+        """
+        _write(tmp_path / "AGENTS.md", AGENTS_CONTENT)
+        _write(tmp_path / "rules" / "bad.rule.md", "---\nnot: valid: yaml: [unclosed\n---\n")
+        target = tmp_path / "main.py"
+        target.touch()
+        # Should not raise, broken rule is skipped
+        ctx = resolve(target)
+        assert ctx.active_rules == []
