@@ -157,3 +157,24 @@ class TestRuleFile:
                 "severity": "error",
                 "description": "x",
             })
+
+    def test_immutable_defaults_false(self):
+        r = RuleFile.model_validate({
+            "agentmd": "1.0",
+            "type": "rule",
+            "id": "my-rule",
+            "severity": "error",
+            "description": "x",
+        })
+        assert r.immutable is False
+
+    def test_immutable_can_be_set(self):
+        r = RuleFile.model_validate({
+            "agentmd": "1.0",
+            "type": "rule",
+            "id": "my-rule",
+            "severity": "error",
+            "description": "x",
+            "immutable": True,
+        })
+        assert r.immutable is True
