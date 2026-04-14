@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agentmd.models import AgentsFile, RuleFile, SkillFile
 from agentmd.parser import ParseError, parse_file
+from agentmd.utils import rule_applies_to_path
 
 
 @dataclass
@@ -18,54 +19,31 @@ class ResolvedContext:
     active_rules: list[RuleFile] = field(default_factory=list)
     source_files: list[Path] = field(default_factory=list)
 
+    # Additive merges across all AGENTS.md files encountered on the walk path
+    # (closest-scope values first).  Useful for monorepos where multiple
+    # AGENTS.md files each declare part of the overall stack.
+    merged_stack: list[str] = field(default_factory=list)
+    merged_conventions: list[str] = field(default_factory=list)
 
-def _path_matches_pattern(pattern: str, path: Path) -> bool:
-    """Return True if path matches a glob pattern.
 
-    Tries matching against:
-    1. The full absolute path string (for absolute patterns)
-    2. All trailing subpaths of increasing depth (for relative patterns like
-       "agentmd/**/*.py" or "**/*.py")
-    3. The filename alone (for simple patterns like "*.py")
-    """
-    import fnmatch
-
-    path_str = str(path)
-    path_name = path.name
-
-    # Direct match on full path or filename
-    if fnmatch.fnmatch(path_str, pattern) or fnmatch.fnmatch(path_name, pattern):
-        return True
-
-    # Try all trailing portions of the path: e.g. for /a/b/c/d.py try:
-    #   a/b/c/d.py, b/c/d.py, c/d.py, d.py
-    parts = path.parts
-    for i in range(len(parts)):
-        sub = "/".join(parts[i:])
-        if fnmatch.fnmatch(sub, pattern):
-            return True
-
-    return False
+# ---------------------------------------------------------------------------
+# Rule-applies helper (delegates to utils)
+# ---------------------------------------------------------------------------
 
 
 def _rule_applies(rule: RuleFile, target: Path) -> bool:
-    """Return True if rule applies to target path (after exception filtering)."""
-    def matches_any(patterns: list[str]) -> bool:
-        return any(_path_matches_pattern(pat, target) for pat in patterns)
+    return rule_applies_to_path(rule.applies_to, rule.exceptions, target)
 
-    if not matches_any(rule.applies_to):
-        return False
-    if matches_any(rule.exceptions):
-        return False
-    return True
+
+# ---------------------------------------------------------------------------
+# Directory-level collectors
+# ---------------------------------------------------------------------------
 
 
 def _collect_skills_in_dir(directory: Path) -> list[SkillFile]:
-    """Collect all *.skill.md files from a /skills subdirectory."""
     skills_dir = directory / "skills"
     if not skills_dir.is_dir():
         return []
-
     skills: list[SkillFile] = []
     for fpath in sorted(skills_dir.glob("*.skill.md")):
         try:
@@ -73,16 +51,14 @@ def _collect_skills_in_dir(directory: Path) -> list[SkillFile]:
             if isinstance(parsed, SkillFile):
                 skills.append(parsed)
         except ParseError:
-            pass  # Conservative: skip broken files, don't abort resolution
+            pass
     return skills
 
 
 def _collect_rules_in_dir(directory: Path) -> list[RuleFile]:
-    """Collect all *.rule.md files from a /rules subdirectory."""
     rules_dir = directory / "rules"
     if not rules_dir.is_dir():
         return []
-
     rules: list[RuleFile] = []
     for fpath in sorted(rules_dir.glob("*.rule.md")):
         try:
@@ -95,7 +71,6 @@ def _collect_rules_in_dir(directory: Path) -> list[RuleFile]:
 
 
 def _collect_referenced_skills(agents: AgentsFile, agents_path: Path) -> list[tuple[Path, SkillFile]]:
-    """Load skill files explicitly referenced in AGENTS.md's skills list."""
     base = agents_path.parent
     result: list[tuple[Path, SkillFile]] = []
     for rel_path in agents.skills:
@@ -112,7 +87,6 @@ def _collect_referenced_skills(agents: AgentsFile, agents_path: Path) -> list[tu
 
 
 def _collect_referenced_rules(agents: AgentsFile, agents_path: Path) -> list[tuple[Path, RuleFile]]:
-    """Load rule files explicitly referenced in AGENTS.md's rules list."""
     base = agents_path.parent
     result: list[tuple[Path, RuleFile]] = []
     for rel_path in agents.rules:
@@ -128,6 +102,50 @@ def _collect_referenced_rules(agents: AgentsFile, agents_path: Path) -> list[tup
     return result
 
 
+# ---------------------------------------------------------------------------
+# Immutable-aware rule deduplication
+# ---------------------------------------------------------------------------
+
+
+def _deduplicate_rules(
+    raw_rules: list[tuple[RuleFile, int]],
+) -> list[RuleFile]:
+    """Deduplicate rules by ID with immutable-priority semantics.
+
+    raw_rules is a list of (rule, scope_depth) where scope_depth=0 is closest.
+
+    Resolution order for each unique ID:
+    1. Immutable rules take priority over non-immutable rules regardless of scope.
+    2. Among multiple immutable rules with the same ID, closest scope wins.
+    3. Among multiple non-immutable rules with the same ID, closest scope wins
+       (standard first-encountered behaviour).
+    """
+    # Group by ID; track (rule, depth, is_immutable)
+    groups: dict[str, list[tuple[RuleFile, int]]] = {}
+    for rule, depth in raw_rules:
+        groups.setdefault(rule.id, []).append((rule, depth))
+
+    result: list[tuple[RuleFile, int]] = []
+    for _id, candidates in groups.items():
+        immutable_candidates = [(r, d) for r, d in candidates if r.immutable]
+        if immutable_candidates:
+            # Pick the closest immutable rule
+            winner = min(immutable_candidates, key=lambda x: x[1])
+        else:
+            # Pick the closest non-immutable rule
+            winner = min(candidates, key=lambda x: x[1])
+        result.append(winner)
+
+    # Sort by original scope depth to preserve closest-first ordering
+    result.sort(key=lambda x: x[1])
+    return [r for r, _ in result]
+
+
+# ---------------------------------------------------------------------------
+# Main resolver
+# ---------------------------------------------------------------------------
+
+
 def resolve(target: Path) -> ResolvedContext:
     """Resolve agentmd context for target file path.
 
@@ -135,52 +153,71 @@ def resolve(target: Path) -> ResolvedContext:
     1. Start at target's directory.
     2. Walk UP toward filesystem root.
     3. At each level collect:
-       a. AGENTS.md — stop after first found (closest wins).
+       a. AGENTS.md — closest wins for name/scope/agent_instructions;
+          stack and conventions accumulate additively across ALL AGENTS.md files.
        b. skills/ subdirectory — accumulate all *.skill.md (closest-scope first).
-       c. rules/ subdirectory — accumulate all *.rule.md (closest-scope first).
+       c. rules/ subdirectory — accumulate all *.rule.md (closest-scope first,
+          but immutable rules from any scope cannot be displaced).
     4. Resolve referenced skills/rules from AGENTS.md paths.
-    5. Filter rules by applies_to globs.
+    5. Filter rules by applies_to globs against target_file_path.
     6. Return merged ResolvedContext.
     """
     ctx = ResolvedContext()
-
     start_dir = target if target.is_dir() else target.parent
 
-    # Walk up from start_dir to filesystem root
+    # Walk up from start_dir
     current = start_dir
     agents_found = False
+    scope_depth = 0
 
-    # Track IDs to avoid duplicates when accumulating across scopes
+    # Track IDs seen for skills
     seen_skill_ids: set[str] = set()
-    seen_rule_ids: set[str] = set()
+
+    # Collect raw (rule, depth) tuples for deduplication post-walk
+    raw_rules: list[tuple[RuleFile, int]] = []
+    seen_referenced_rule_ids: set[str] = set()
+
+    # Accumulated stack / conventions from all AGENTS.md files
+    all_stacks: list[str] = []
+    all_conventions: list[str] = []
 
     while True:
-        # --- AGENTS.md (stop at first found) ---
+        # --- AGENTS.md ---
         agents_path = current / "AGENTS.md"
-        if not agents_found and agents_path.is_file():
+        if agents_path.is_file():
             try:
                 parsed = parse_file(agents_path)
                 if isinstance(parsed, AgentsFile):
-                    ctx.agents_file = parsed
-                    ctx.source_files.append(agents_path)
-                    agents_found = True
+                    # Closest AGENTS.md → use as primary agents_file
+                    if not agents_found:
+                        ctx.agents_file = parsed
+                        ctx.source_files.append(agents_path)
+                        agents_found = True
 
-                    # Load referenced skills from AGENTS.md
-                    for fpath, skill in _collect_referenced_skills(parsed, agents_path):
-                        if skill.id not in seen_skill_ids:
-                            ctx.active_skills.append(skill)
-                            ctx.source_files.append(fpath)
-                            seen_skill_ids.add(skill.id)
+                        # Referenced skills from AGENTS.md
+                        for fpath, skill in _collect_referenced_skills(parsed, agents_path):
+                            if skill.id not in seen_skill_ids:
+                                ctx.active_skills.append(skill)
+                                ctx.source_files.append(fpath)
+                                seen_skill_ids.add(skill.id)
 
-                    # Load referenced rules from AGENTS.md
-                    for fpath, rule in _collect_referenced_rules(parsed, agents_path):
-                        if rule.id not in seen_rule_ids:
-                            ctx.active_rules.append(rule)
-                            ctx.source_files.append(fpath)
-                            seen_rule_ids.add(rule.id)
+                        # Referenced rules from AGENTS.md
+                        for fpath, rule in _collect_referenced_rules(parsed, agents_path):
+                            if rule.id not in seen_referenced_rule_ids:
+                                raw_rules.append((rule, scope_depth))
+                                ctx.source_files.append(fpath)
+                                seen_referenced_rule_ids.add(rule.id)
+
+                    # Additive merge: collect stack + conventions from ALL AGENTS.md
+                    for item in parsed.stack:
+                        if item not in all_stacks:
+                            all_stacks.append(item)
+                    for item in parsed.conventions:
+                        if item not in all_conventions:
+                            all_conventions.append(item)
 
             except ParseError:
-                pass  # Conservative: skip broken AGENTS.md, keep walking
+                pass  # Conservative: skip broken AGENTS.md
 
         # --- skills/ subdirectory ---
         for skill in _collect_skills_in_dir(current):
@@ -191,20 +228,27 @@ def resolve(target: Path) -> ResolvedContext:
 
         # --- rules/ subdirectory ---
         for rule in _collect_rules_in_dir(current):
-            if rule.id not in seen_rule_ids:
-                ctx.active_rules.append(rule)
-                seen_rule_ids.add(rule.id)
-                ctx.source_files.append(current / "rules")
+            raw_rules.append((rule, scope_depth))
 
         # Move up
         parent = current.parent
         if parent == current:
-            break  # Reached filesystem root
+            break
         current = parent
+        scope_depth += 1
 
-    # Filter rules: keep only those whose applies_to patterns match the target
+    # Deduplicate rules (immutable-aware)
+    all_rules = _deduplicate_rules(raw_rules)
+
+    # Filter rules for the target path
     if not target.is_dir():
-        ctx.active_rules = [r for r in ctx.active_rules if _rule_applies(r, target)]
+        ctx.active_rules = [r for r in all_rules if _rule_applies(r, target)]
+    else:
+        ctx.active_rules = all_rules
+
+    # Store additive merges
+    ctx.merged_stack = all_stacks
+    ctx.merged_conventions = all_conventions
 
     # Deduplicate source_files while preserving order
     seen: set[Path] = set()

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+_KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 class AgentsFile(BaseModel):
@@ -62,8 +65,7 @@ class SkillFile(BaseModel):
     @field_validator("id")
     @classmethod
     def validate_kebab_case(cls, v: str) -> str:
-        import re
-        if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", v):
+        if not _KEBAB_RE.match(v):
             raise ValueError(f"Skill id must be kebab-case (lowercase letters, digits, hyphens), got '{v}'")
         return v
 
@@ -79,6 +81,9 @@ class RuleFile(BaseModel):
     rationale: str = ""
     applies_to: list[str] = ["**/*"]
     exceptions: list[str] = []
+    # Security/compliance rules can be marked immutable so no closer-scope rule
+    # with the same ID can displace them.
+    immutable: bool = False
 
     @field_validator("agentmd")
     @classmethod
@@ -90,8 +95,7 @@ class RuleFile(BaseModel):
     @field_validator("id")
     @classmethod
     def validate_kebab_case(cls, v: str) -> str:
-        import re
-        if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", v):
+        if not _KEBAB_RE.match(v):
             raise ValueError(f"Rule id must be kebab-case (lowercase letters, digits, hyphens), got '{v}'")
         return v
 

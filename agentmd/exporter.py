@@ -15,6 +15,9 @@ def export_context(ctx: ResolvedContext) -> dict[str, Any]:
         "active_skills": [_export_skill(s) for s in ctx.active_skills],
         "active_rules": [_export_rule(r) for r in ctx.active_rules],
         "source_files": [str(p) for p in ctx.source_files],
+        # Additive merges from all AGENTS.md files in scope
+        "merged_stack": ctx.merged_stack,
+        "merged_conventions": ctx.merged_conventions,
     }
 
 
@@ -56,4 +59,5 @@ def _export_rule(r: Any) -> dict[str, Any]:
         "rationale": r.rationale,
         "applies_to": r.applies_to,
         "exceptions": r.exceptions,
+        "immutable": r.immutable,
     }
